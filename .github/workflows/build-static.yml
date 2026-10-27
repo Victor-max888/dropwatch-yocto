@@ -1,0 +1,68 @@
+name: Build Pure Static Dropwatch
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch: # 支持网页手动点击运行
+
+jobs:
+  build-static:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: linux/arm64
+            name: aarch64
+            artifact_name: dropwatch-aarch64-static
+          - arch: linux/arm/v7
+            name: armv7
+            artifact_name: dropwatch-armv7-static
+          - arch: linux/amd64
+            name: x86_64
+            artifact_name: dropwatch-x86_64-static
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 利用 QEMU 模拟目标架构（ARM64 / ARM32）
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 进入对应架构的 Alpine 容器进行静态编译
+      - name: Build Static Binary with musl
+        run: |
+          docker run --rm --platform ${{ matrix.arch }} -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
+            apk update && apk add --no-cache \
+              build-base autoconf automake libtool pkgconf \
+              libnl3-dev libnl3-static \
+              libpcap-dev libpcap-static \
+              readline-dev readline-static \
+              ncurses-static
+
+            ./autogen.sh
+            ./configure \
+              LDFLAGS='-static' \
+              PKG_CONFIG='pkg-config --static' \
+              LIBS='-static -lpthread'
+
+            make -j\$(nproc)
+            
+            # 去除调试符号，压缩体积
+            strip src/dropwatch
+            
+            # 重命名为目标产物
+            cp src/dropwatch /workspace/${{ matrix.artifact_name }}
+          "
+
+      # 检查生成的二进制文件格式是否为纯静态
+      - name: Verify static link
+        run: |
+          file ${{ matrix.artifact_name }}
+
+      # 上传生成的单文件二进制
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
