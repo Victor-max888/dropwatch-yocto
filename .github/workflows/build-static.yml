@@ -19,7 +19,7 @@ jobs:
       - name: Build Pure Static Binary (ARM64)
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
-            # 安装依赖：补充 bsd-compat-headers 提供 <sys/queue.h>
+            # 1. 安装经核对无误的全部静态依赖
             apk update && apk add --no-cache \
               build-base autoconf automake libtool pkgconf \
               linux-headers \
@@ -29,23 +29,36 @@ jobs:
               readline-dev readline-static \
               ncurses-dev ncurses-static
 
+            # 2. 生成 Makefile
             ./autogen.sh
 
+            # 3. 强制关闭动态库，全局焊死 -static
             ./configure \
+              CC='gcc -static' \
               --without-bfd \
-              LDFLAGS='-static' \
+              --enable-static \
+              --disable-shared \
+              LDFLAGS='-all-static -static' \
               PKG_CONFIG='pkg-config --static' \
               LIBS='-static -lpthread -lncursesw'
 
-            make -C src dropwatch -j\$(nproc)
+            # 4. 重点：在 make 时强制重写 dropwatch_LDFLAGS，阻断 libtool 过滤
+            make -C src dropwatch dropwatch_LDFLAGS='-all-static' -j\$(nproc)
 
+            # 5. 剥离符号
             strip src/dropwatch
             cp src/dropwatch /workspace/dropwatch-aarch64-static
           "
 
-      - name: Verify static binary
+      # 6. 严密自检环节：如果二进制里还残留任何 ld-musl 或 ld-linux 解释器，CI 直接报错
+      - name: Verify 100% statically linked
         run: |
           file dropwatch-aarch64-static
+          if strings dropwatch-aarch64-static | grep -E '^/lib/ld-'; then
+            echo 'FATAL ERROR: Dynamic interpreter still found! Binary is NOT purely static.'
+            exit 1
+          fi
+          echo 'SUCCESS: 100% pure static binary confirmed!'
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
