@@ -1,68 +1,58 @@
-name: Build Pure Static Dropwatch
+name: Build Static Dropwatch (ARM64)
 
 on:
   push:
     branches: [ "**" ]
-  workflow_dispatch: # 支持网页手动点击运行
+  workflow_dispatch:
 
 jobs:
-  build-static:
+  build-arm64:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: linux/arm64
-            name: aarch64
-            artifact_name: dropwatch-aarch64-static
-          - arch: linux/arm/v7
-            name: armv7
-            artifact_name: dropwatch-armv7-static
-          - arch: linux/amd64
-            name: x86_64
-            artifact_name: dropwatch-x86_64-static
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 利用 QEMU 模拟目标架构（ARM64 / ARM32）
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 进入对应架构的 Alpine 容器进行静态编译
-      - name: Build Static Binary with musl
+      - name: Build Pure Static Binary (ARM64)
         run: |
-          docker run --rm --platform ${{ matrix.arch }} -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
+          docker run --rm --platform linux/arm64 -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
+            # 1. 安装经严格核对存在的包列表（补齐 linux-headers 与 ncursesw，去掉不存在的 libpcap-static）
             apk update && apk add --no-cache \
               build-base autoconf automake libtool pkgconf \
+              linux-headers \
               libnl3-dev libnl3-static \
-              libpcap-dev libpcap-static \
+              libpcap-dev \
               readline-dev readline-static \
-              ncurses-static
+              ncurses-dev ncurses-static
 
+            # 2. 生成 autotools 配置脚本
             ./autogen.sh
+
+            # 3. 配置纯静态编译：
+            #    --without-bfd: 禁用 binutils 依赖，改用 kallsyms (-l kas)，极大减少静态符号冲突
             ./configure \
+              --without-bfd \
               LDFLAGS='-static' \
               PKG_CONFIG='pkg-config --static' \
-              LIBS='-static -lpthread'
+              LIBS='-static -lpthread -lncursesw'
 
-            make -j\$(nproc)
-            
-            # 去除调试符号，压缩体积
+            # 4. 精确只构建 dropwatch 核心程序（避开因缺少 libpcap 静态库导致 dwdump 编译报错）
+            make -C src dropwatch -j\$(nproc)
+
+            # 5. 剥离符号并拷贝到工作区
             strip src/dropwatch
-            
-            # 重命名为目标产物
-            cp src/dropwatch /workspace/${{ matrix.artifact_name }}
+            cp src/dropwatch /workspace/dropwatch-aarch64-static
           "
 
-      # 检查生成的二进制文件格式是否为纯静态
-      - name: Verify static link
+      - name: Verify static binary
         run: |
-          file ${{ matrix.artifact_name }}
+          file dropwatch-aarch64-static
 
-      # 上传生成的单文件二进制
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_name }}
+          name: dropwatch-aarch64-static
+          path: dropwatch-aarch64-static
