@@ -19,30 +19,26 @@ jobs:
       - name: Build Pure Static Binary (ARM64)
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
-            # 1. 安装经严格核对存在的包列表（补齐 linux-headers 与 ncursesw，去掉不存在的 libpcap-static）
+            # 安装依赖：补充 bsd-compat-headers 提供 <sys/queue.h>
             apk update && apk add --no-cache \
               build-base autoconf automake libtool pkgconf \
               linux-headers \
+              bsd-compat-headers \
               libnl3-dev libnl3-static \
               libpcap-dev \
               readline-dev readline-static \
               ncurses-dev ncurses-static
 
-            # 2. 生成 autotools 配置脚本
             ./autogen.sh
 
-            # 3. 配置纯静态编译：
-            #    --without-bfd: 禁用 binutils 依赖，改用 kallsyms (-l kas)，极大减少静态符号冲突
             ./configure \
               --without-bfd \
               LDFLAGS='-static' \
               PKG_CONFIG='pkg-config --static' \
               LIBS='-static -lpthread -lncursesw'
 
-            # 4. 精确只构建 dropwatch 核心程序（避开因缺少 libpcap 静态库导致 dwdump 编译报错）
             make -C src dropwatch -j\$(nproc)
 
-            # 5. 剥离符号并拷贝到工作区
             strip src/dropwatch
             cp src/dropwatch /workspace/dropwatch-aarch64-static
           "
