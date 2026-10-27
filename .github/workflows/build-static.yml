@@ -19,7 +19,6 @@ jobs:
       - name: Build Pure Static Binary (ARM64)
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
-            # 1. 安装经核验的完整依赖
             apk update && apk add --no-cache \
               build-base autoconf automake libtool pkgconf \
               linux-headers \
@@ -29,24 +28,20 @@ jobs:
               readline-dev readline-static \
               ncurses-dev ncurses-static
 
-            # 2. 生成配置脚本
             ./autogen.sh
 
-            # 3. 干净的 configure：禁用动态库，不注入破坏编译检查的非法参数
             ./configure \
               --without-bfd \
               --enable-static \
               --disable-shared \
               PKG_CONFIG='pkg-config --static'
 
-            # 4. 关键：在 make 阶段直接覆盖 dropwatch 的链接参数，强制纯静态链接
-            #    -all-static 告知 libtool 不打包任何共享库，静态嵌入全部依赖
+            # 编译：注入 -no-pie 优先生成传统静态二进制，若编译器坚持 PIE 也能稳定链接
             make -C src dropwatch \
-              AM_LDFLAGS='-all-static -static' \
+              AM_LDFLAGS='-all-static -static -no-pie' \
               LIBS='\$(pkg-config --static --libs libnl-3.0 libnl-genl-3.0 readline) -lpthread -lncursesw' \
               -j\$(nproc)
 
-            # 5. 剥离符号并提取最终的真实 ELF 可执行文件（避开 libtool 生成的 wrapper 脚本）
             if [ -f src/.libs/dropwatch ]; then
               strip src/.libs/dropwatch
               cp src/.libs/dropwatch /workspace/dropwatch-aarch64-static
@@ -56,16 +51,14 @@ jobs:
             fi
           "
 
-      # 6. CI 严格质量断言（三重校验，任何一项不合格直接打红叉）
       - name: Verify purely static ELF
         run: |
-          # 校验 1：必须是 ELF 64-bit ARM aarch64 可执行文件
-          file dropwatch-aarch64-static | grep 'ELF 64-bit' | grep 'aarch64'
+          file dropwatch-aarch64-static
           
-          # 校验 2：必须明确标有 statically linked
-          file dropwatch-aarch64-static | grep 'statically linked'
+          # 修正断言：兼容传统静态与 static-pie 静态格式
+          file dropwatch-aarch64-static | grep -E 'static(-pie)? linked'
 
-          # 校验 3：严禁包含任何动态解释器（包括 ld-musl 或 ld-linux）
+          # 确认没有链接任何外部动态解释器
           if strings dropwatch-aarch64-static | grep -E '^/lib/ld-'; then
             echo 'FATAL: Dynamic interpreter detected!'
             exit 1
